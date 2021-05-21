@@ -1,0 +1,29 @@
+hazelcast:
+  advanced-network:
+    enabled: true
+    wan-endpoint-config:
+      receiver-endpoint:
+        ssl:
+          enabled: true
+    member-server-socket-endpoint-config:
+      port:
+        port-count: 100
+        auto-increment: true
+        port: 5701
+    client-server-socket-endpoint-config:
+      port:
+        port-count: 100
+        auto-increment: true
+        port: 5702
+  wan-replication:
+    my-wan-replication:
+      batch-publisher:
+        my-publisher:
+          cluster-name: dev
+          target-endpoints: 146.220.66.34.bc.googleusercontent.com:443
+          endpoint: receiver-endpoint
+  map:
+    rep:
+      wan-replication-ref:
+        my-wan-replication:
+          republishing-enabled: false

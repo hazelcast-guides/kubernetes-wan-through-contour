@@ -1,0 +1,333 @@
+:github-address: https://github.com/hazelcast-guides/kubernetes-wan-through-contour
+:templates-url: templates:ROOT:page$/
+:hazelcast: Hazelcast IMDG
+:framework: Kubernetes
+
+
+= Hazelcast Secure WAN Replication through Contour ingress (Enterprise Only)
+
+This is a complete example presenting how to set a secure WAN Replication through Contour ingress between two Hazelcast clusters deployed in two different Kubernetes environments.
+
+include::{templates-url}/link-to-repo.adoc[]
+
+== What You’ll Learn
+
+In this guide you will create two Hazelcast clusters and will set up secure WAN Replication between them. The clusters will be deployed in two different Kubernetes environments and the receiver cluster's Kubernetes will have Contour configured as ingress controller.
+
+== Introduction
+
+This example focuses on the WAN Replication feature and assumes that you have some general knowledge about Hazelcast on Kubernetes. Here are some resources:
+
+* https://hazelcast.com/product-features/wan-replication/[Hazelcast WAN Replication]
+* https://github.com/hazelcast/hazelcast-kubernetes[Hazelcast Kubernetes README]
+* xref:kubernetes-wan:ROOT:index.adoc[Hazelcast WAN Replication on Kubernetes Guide]
+* xref:kubernetes:ROOT:index.adoc[Hazelcast on Kubernetes Guide]
+* xref:kubernetes-embedded:ROOT:index.adoc[Embedded Hazelcast on Kubernetes Guide]
+
+The example also assumes you have the following:
+
+- Two running Kubernetes clusters: The `Publisher` and the `Receiver` clusters.
+- The `Receiver` cluster has Contour ingress controller installed. Please see https://projectcontour.io/getting-started/[the Contour getting started guide] for more information. This guide is tested with Contour v1.15.1.
+- The `kubectl` tool installed on your local. For all the commands the indication (`Receiver`) means that `kubectl` uses the context of the receiver cluster, and the indication (`Publisher`) means that `kubectl` uses the context of the publisher cluster.
+
+[NOTE]
+====
+This Code Sample presents WAN Replication via LoadBalancer, which may result in the communication over only one of the target members.
+====
+
+== WAN Replication via TLS Session Proxying or Passthrough
+
+Contour's `HTTPProxy` supports https://projectcontour.io/docs/v1.13.1/config/tls-termination/#tls-session-proxying[proxying of TLS encapsulated TCP sessions]. This means the TLS will be terminated on Contour ingress and the `HTTPProxy` will forward the de-encrypted TCP traffic to the Hazelcast WAN endpoint.
+
+If you wish to handle the TLS handshake at the Hazelcast cluster, you need to set `spec.virtualhost.tls.passthrough: true` when configuring `HTTPProxy`. This indicates that the encrypted connection will be forwarded to the backend service without any TLS termination.
+
+This guide covers both scenarios, just pick one of the configurations when available for both TLS Session Proxying or Passthrough.
+
+== 1. Create Receiver Cluster
+
+Hazelcast uses Kubernetes API for the member discovery and it therefore requires granting view permission to certain resources.
+
+[source, shell]
+----
+(Receiver) $ kubectl apply -f https://raw.githubusercontent.com/hazelcast/hazelcast-kubernetes/master/rbac.yaml
+----
+
+Firstly, create a secret with the Hazelcast Enterprise license key.
+
+[source, shell]
+----
+(Receiver) $ kubectl create secret generic hz-license-key --from-literal license=<hz-license-key>
+----
+
+To secure the connection between Hazelcast clusters, we need to make keys available as secrets.
+
+[source, shell]
+----
+(Receiver) $ kubectl create secret generic keystore --from-file=keystore --from-file=truststore
+----
+
+Then, create the Hazelcast member configuration.
+
+[tabs]
+====
+
+TLS Session Proxying::
++
+--
+[source, bash]
+----
+(Receiver) $ kubectl create configmap hazelcast-configuration --from-file=hazelcast.yaml=receiver/session-proxying-hazelcast.yaml
+----
+--
+
+TLS Session Passthrough::
++
+
+--
+[source, bash]
+----
+(Receiver) $ kubectl create configmap hazelcast-configuration --from-file=hazelcast.yaml=receiver/session-passthrough-hazelcast.yaml
+----
+--
+
+====
+
+[NOTE]
+====
+If you check the `receiver/session-proxying-hazelcast.yaml` configuration, you'll see that *SSL is not enabled* for `wan-server-socket-endpoint-config`. This is required for TLS session proxying, because the secure connection from publisher cluster will be de-encrypted on Contour ingress controller and Hazelcast receiver cluster will accept these non-TLS TCP connections from Contour for WAN replication.
+
+However, `receiver/session-passthrough-hazelcast.yaml` has the `wan-server-socket-endpoint-config` configuration with *SSL enabled* since the Hazelcast cluster is expected to be capable of completing the TLS handshake when Contour is configured with session passthrough.
+====
+
+Also, create a Hazelcast client configuration to access the cluster for verification.
+
+[source, shell]
+----
+(Receiver) $ kubectl create configmap hazelcast-client-configuration --from-file=hazelcast-client.yaml
+----
+
+Now, you can create the cluster with the following command.
+
+[source, shell]
+----
+(Receiver) $ kubectl apply -f receiver/statefulset.yaml
+----
+
+Check that the cluster works correctly. Please note that `service/hazelcast` is a `ClusterIP` service and not directly accessible from outside of the k8s cluster. To access the Hazelcast cluster, we will setup Contour's `HTTPProxy` custom resource.
+
+[source, shell]
+----
+(Receiver) $ kubectl get all
+NAME                                      READY   STATUS    RESTARTS   AGE
+pod/hazelcast-0                           1/1     Running   0          26h
+pod/hazelcast-1                           1/1     Running   0          26h
+pod/hazelcast-2                           1/1     Running   0          26h
+pod/my-contour-contour-6dbf9557b6-5q5tl   1/1     Running   0          2d8h
+pod/my-contour-contour-6dbf9557b6-6vrnf   1/1     Running   0          2d8h
+pod/my-contour-envoy-lsk72                2/2     Running   0          2d8h
+pod/my-contour-envoy-rfdng                2/2     Running   0          2d8h
+pod/my-contour-envoy-vk5rl                2/2     Running   0          2d8h
+
+NAME                       TYPE           CLUSTER-IP     EXTERNAL-IP       PORT(S)                      AGE
+service/hazelcast          ClusterIP      10.108.5.170   <none>            5701/TCP,11010/TCP           26h
+service/kubernetes         ClusterIP      10.108.0.1     <none>            443/TCP                      28d
+service/my-contour         ClusterIP      10.108.8.155   <none>            8001/TCP                     2d8h
+service/my-contour-envoy   LoadBalancer   10.108.6.89    104.198.198.186   80:32210/TCP,443:30179/TCP   2d8h
+
+NAME                              DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR   AGE
+daemonset.apps/my-contour-envoy   3         3         3       3            3           <none>          2d8h
+
+NAME                                 READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/my-contour-contour   2/2     2            2           2d8h
+
+NAME                                            DESIRED   CURRENT   READY   AGE
+replicaset.apps/my-contour-contour-6dbf9557b6   2         2         2       2d8h
+
+NAME                         READY   AGE
+statefulset.apps/hazelcast   3/3     26h
+----
+
+== 2. Configure Contour's `HTTPProxy`
+
+Please apply either one of the sections below to configure Contour's `HTTPProxy` accordingly:
+
+=== Configuring with TLS Session Proxying
+
+First, you need to configure the TLS secrets for secure connection. Run the following command with Base64 encoded certificate and key files:
+
+[source, shell]
+----
+(Receiver) $ kubectl create secret tls hz-secret --cert=client.pem --key=client.key
+----
+
+Then, update the `HTTPProxy` configuration in receiver/contour-proxying.yaml with the FQDN of your receiver cluster:
+
+[source, yaml]
+----
+apiVersion: projectcontour.io/v1
+kind: HTTPProxy
+metadata:
+  name: hz-proxy
+  namespace: default
+spec:
+  virtualhost:
+    fqdn: your-cluster-domain-name
+    tls:
+      secretName: hz-secret
+  tcpproxy:
+    services:
+      - name: hazelcast
+        port: 11010
+----
+
+Now, you can run command below to setup `HTTPProxy`:
+
+[source, shell]
+----
+(Receiver) $ kubectl apply -f receiver/contour-proxying.yaml
+----
+
+Check that `HTTPProxy` is valid and setup correctly:
+
+[source, shell]
+----
+(Receiver) $ kubectl get httpproxies
+NAME       FQDN                       TLS SECRET    STATUS   STATUS DESCRIPTION
+hz-proxy   your-cluster-domain-name   hz-secret     valid    Valid HTTPProxy
+----
+
+=== Configuring with TLS Session Passthrough
+
+When configuring with TLS Session Passthrough, you don't need to configure a TLS secret for Contour since the TLS handshake is completed at Hazelcast cluster.
+
+Firstly, update the `HTTPProxy` configuration in receiver/contour-passthrough.yaml with the FQDN of your receiver cluster:
+
+[source, yaml]
+----
+apiVersion: projectcontour.io/v1
+kind: HTTPProxy
+metadata:
+  name: hz-proxy-pass
+  namespace: default
+spec:
+  virtualhost:
+    fqdn: your-cluster-domain-name
+    tls:
+      passthrough: true
+  tcpproxy:
+    services:
+      - name: hazelcast
+        port: 11010
+----
+
+Then, run the following command to setup `HTTPProxy`:
+
+[source, shell]
+----
+(Receiver) $ kubectl apply -f receiver/contour-passthrough.yaml
+----
+
+Check that `HTTPProxy` is valid and setup correctly:
+
+[source, shell]
+----
+(Receiver) $ kubectl get httpproxies
+NAME            FQDN                           TLS SECRET   STATUS   STATUS DESCRIPTION
+hz-proxy-pass   your-cluster-domain-name                    valid    Valid HTTPProxy
+----
+
+== 3. Create Publisher Cluster
+
+Again, we need to grant Kubernetes API resource permissions.
+
+[source, shell]
+----
+(Publisher) $ kubectl apply -f https://raw.githubusercontent.com/hazelcast/hazelcast-kubernetes/master/rbac.yaml
+----
+
+Then, update the WAN Replication configuration in publisher/hazelcast.yaml with the FQDN of your receiver cluster. Please keep `443` in the end as port.
+
+[source, yaml]
+----
+...
+  wan-replication:
+    my-wan-replication:
+      batch-publisher:
+        my-publisher:
+          cluster-name: dev
+          target-endpoints: your-cluster-domain-name:443
+          endpoint: receiver-endpoint
+...
+----
+
+[NOTE]
+====
+If you check the `publisher/hazelcast.yaml` configuration, you'll see that SSL is *enabled* for `wan-endpoint-config`. This is required for both TLS session proxying or passthrough.
+====
+
+Create ConfigMap with the Hazelcast configuration.
+
+[source, shell]
+----
+(Publisher) $ kubectl create configmap hazelcast-configuration --from-file=publisher/hazelcast.yaml
+----
+
+Also, create a Hazelcast client configuration to access the cluster for verification.
+
+[source, shell]
+----
+(Publisher) $ kubectl create configmap hazelcast-client-configuration --from-file=hazelcast-client.yaml
+----
+
+Again, we need to create a secret with the Hazelcast Enterprise license key.
+
+[source, shell]
+----
+(Publisher) $ kubectl create secret generic hz-license-key --from-literal license=<hz-license-key>
+----
+
+Also, we again need to make keys available as secrets.
+
+[source, shell]
+----
+(Publisher) $ kubectl create secret generic keystore --from-file=keystore --from-file=truststore
+----
+
+Finally, we can start the publisher Hazelcast cluster.
+
+[source, shell]
+----
+(Publisher) $ kubectl apply -f publisher/statefulset.yaml
+----
+
+Your two Hazelcast clusters are set up with the WAN Replication. Now, we can check if everything works correctly.
+
+== 3. Verify WAN Replication
+
+Insert data into the publisher Hazelcast cluster
+
+[source, shell]
+----
+(Publisher) $ kubectl exec -it hazelcast-0 -- /bin/bash
+# java -cp lib/hazelcast-enterprise-all*.jar -Dhazelcast.client.config=/data/hazelcast/client/hazelcast-client.yaml com.hazelcast.client.console.ClientConsoleApp
+hazelcast[default] > ns rep
+namespace: rep
+hazelcast[rep] > m.put key value
+null
+----
+
+Check that the data was replicated to the receiver Hazelcast cluster.
+
+[source, shell]
+----
+(Receiver) $ kubectl exec -it hazelcast-0 -- /bin/bash
+# java -cp lib/hazelcast-enterprise-all*.jar -Dhazelcast.client.config=/data/hazelcast/client/hazelcast-client.yaml com.hazelcast.client.console.ClientConsoleApp
+hazelcast[default] > ns rep
+hazelcast[rep] > m.get key
+value
+----
+
+== Summary
+
+In this example we have seen how to use Hazelcast WAN replication features that can be used to keep multiple Hazelcast clusters in sync. WAN replication can be very useful for https://hazelcast.com/resources/multi-cloud-deployments-run-hazelcast-anywhere-and-everywhere/[Multi-Cloud Deployments].
+

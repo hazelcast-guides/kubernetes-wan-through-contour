@@ -329,5 +329,5 @@ value
 
 == Summary
 
-In this example we have seen how to use Hazelcast WAN replication features that can be used to keep multiple Hazelcast clusters in sync. WAN replication can be very useful for https://hazelcast.com/resources/multi-cloud-deployments-run-hazelcast-anywhere-and-everywhere/[Multi-Cloud Deployments].
+In this example we have seen how to use Hazelcast WAN replication features through Contour ingress controller to keep multiple Hazelcast clusters in sync. WAN replication can be very useful for https://hazelcast.com/resources/multi-cloud-deployments-run-hazelcast-anywhere-and-everywhere/[Multi-Cloud Deployments].
 

@@ -1,0 +1,20 @@
+hazelcast:
+  advanced-network:
+    enabled: true
+    join:
+      kubernetes:
+        enabled: true
+        service-name: hazelcast
+    member-server-socket-endpoint-config:
+        ssl:
+          enabled: true
+    client-server-socket-endpoint-config:
+      port:
+        port-count: 100
+        auto-increment: true
+        port: 5702
+    wan-server-socket-endpoint-config:
+      receiver-endpoint:
+        port:
+          auto-increment: false
+          port: 11010

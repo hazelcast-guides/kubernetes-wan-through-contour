@@ -1,0 +1,14 @@
+apiVersion: projectcontour.io/v1
+kind: HTTPProxy
+metadata:
+  name: hz-proxy
+  namespace: default
+spec:
+  virtualhost:
+    fqdn: 146.220.66.34.bc.googleusercontent.com
+    tls:
+      secretName: hz-secret
+  tcpproxy:
+    services:
+      - name: hazelcast
+        port: 11010
